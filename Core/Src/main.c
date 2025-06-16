@@ -47,6 +47,15 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+extern DMA_HandleTypeDef hdma_uart5_rx; // DMA句柄
+// 定义接收缓冲区大小
+#define RX_BUFFER_SIZE 128
+uint8_t rx_buffer[RX_BUFFER_SIZE]; // 接收缓冲区
+
+// 陀螺仪数据处理相关变量
+uint8_t gyro_data_ready = 0; // 数据准备标志
+uint16_t rx_write_pos = 0;   // DMA写入位置
+uint16_t rx_read_pos = 0;    // 数据读取位置
 
 /* USER CODE END PV */
 
@@ -97,24 +106,31 @@ int main(void)
   MX_USB_HOST_Init();
   MX_USART3_UART_Init();
   MX_CAN1_Init();
-  MX_UART5_Init();
-  /* USER CODE BEGIN 2 */
+  MX_UART5_Init(); /* USER CODE BEGIN 2 */
+  // 启动UART5的DMA接收
+  HAL_StatusTypeDef dma_status = HAL_UART_Receive_DMA(&huart5, rx_buffer, RX_BUFFER_SIZE);
+  if (dma_status != HAL_OK)
+  {
+    printf("DMA Init Failed: %d\r\n", dma_status);
+  }
+  else
+  {
+    printf("DMA Init Success\r\n");
+  }
 
-  // UART和DMA中断优先级配置（DMA优先级更高）
-  HAL_NVIC_SetPriority(UART5_IRQn, 1, 0);        // UART基础优先级
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0); // DMA优先级更高
-  // 启用中断
-  HAL_NVIC_EnableIRQ(UART5_IRQn);
-  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
-  __HAL_UART_ENABLE_IT(&huart5, UART_IT_RXNE); // 初始化中断
-  __HAL_DMA_ENABLE_IT(huart5.hdmarx, DMA_IT_TC | DMA_IT_HT);
+  // 启用UART5的IDLE中断
+  __HAL_UART_ENABLE_IT(&huart5, UART_IT_IDLE);
+
+  // 测试printf是否工作
+  printf("System Init OK\r\n");
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
-  printf("12 12 12 12!\r\n"); // 串口打印成功
+  uint32_t heartbeat_time = 0;
+  uint16_t last_dma_pos = 0;
 
   while (1)
   {
@@ -123,40 +139,49 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-#define RX_BUFFER_SIZE 128
-    uint8_t rx_buffer[RX_BUFFER_SIZE];
-    uint8_t header;
-    uint8_t checksum;
-    int16_t data[3]; // 用于存储解析后的16位数据
+    // 定期处理DMA缓冲区数据
+    Process_DMA_Buffer();
 
-    while (HAL_UART_Receive(&huart5, &header, 1, 1) != HAL_OK || header != 0x55)
-      ;
-
-    // 2. 接收剩余数据
-    if (HAL_UART_Receive(&huart5, rx_buffer, 10, 10) != HAL_OK)
-      continue;
-    // 3. 校验和验证
-    checksum = header + rx_buffer[0]; // 初始值=包头+类型
-    for (int i = 0; i < 8; i++)
+    // 处理陀螺仪数据
+    if (gyro_data_ready)
     {
-      checksum += rx_buffer[1 + i]; // 累加数据部分
-    }
-    if (checksum != rx_buffer[9])
-      continue; // 校验失败跳过
-    // 4. 数据解析（仅处理角度数据）
-    if (rx_buffer[0] == 0x53)
-    { // 检查是否为角度数据
-      for (int i = 0; i < 3; i++)
-      {
-        data[i] = (int16_t)((int8_t)rx_buffer[1 + 2 * i + 1] << 8 | rx_buffer[1 + 2 * i]);
-      }
-      // 5. 转换为浮点角度并打印
-      float roll = (float)data[0] / 32768.0f * 180;  // 横滚 1 这俩得具体摆动得知
-      float pitch = (float)data[1] / 32768.0f * 180; // 俯仰 1
-      float yaw = (float)data[2] / 32768.0f * 180;   // 航向
+      gyro_data_ready = 0; // 清除标志
+    } // 每隔2秒输出心跳和DMA状态
+    if (HAL_GetTick() - heartbeat_time > 2000)
+    {
+      heartbeat_time = HAL_GetTick();
+      uint16_t current_dma_pos = RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_uart5_rx);
+      printf("Heartbeat - DMA pos: %d, Last: %d\r\n", current_dma_pos, last_dma_pos);
 
-      printf("Roll: %.2f°, Pitch: %.2f°, Yaw: %.2f°\r\n", roll, pitch, yaw);
+      // 显示当前缓冲区中的数据（前10个字节）
+      printf("Buffer data: ");
+      for (int i = 0; i < 10 && i < current_dma_pos; i++)
+      {
+        printf("0x%02X ", rx_buffer[i]);
+      }
+      printf("\r\n");
+
+      // 检查DMA是否有数据变化
+      if (current_dma_pos != last_dma_pos)
+      {
+        printf("DMA data received!\r\n");
+        last_dma_pos = current_dma_pos;
+      }
+      else
+      {
+        printf("No DMA data change\r\n");
+
+        // 显示接收到的那1个字节的详细信息
+        if (current_dma_pos == 1)
+        {
+          printf("Only 1 byte received: 0x%02X (decimal: %d, char: '%c')\r\n",
+                 rx_buffer[0], rx_buffer[0],
+                 (rx_buffer[0] >= 32 && rx_buffer[0] <= 126) ? rx_buffer[0] : '?');
+        }
+      }
     }
+
+    HAL_Delay(1); // 避免CPU占用过高
 
     /* USER CODE END 3 */
   }
@@ -207,6 +232,96 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+// 陀螺仪数据解析函数
+void Parse_Gyro_Data(uint8_t *buffer, uint16_t start_pos)
+{
+
+  uint8_t checksum;
+  int16_t data[3]; // 用于存储解析后的16位数据
+
+  // 校验和验证
+  checksum = 0x55 + buffer[(start_pos + 1) % RX_BUFFER_SIZE]; // 包头+类型
+  for (int i = 0; i < 8; i++)
+  {
+    checksum += buffer[(start_pos + 2 + i) % RX_BUFFER_SIZE]; // 累加数据部分
+  }
+
+  if (checksum != buffer[(start_pos + 10) % RX_BUFFER_SIZE])
+  {
+    //!printf("Checksum failed\r\n");
+    return; // 校验失败
+  }
+
+  // 检查是否为角度数据
+  if (buffer[(start_pos + 1) % RX_BUFFER_SIZE] == 0x53)
+  {
+    // 数据解析
+    for (int i = 0; i < 3; i++)
+    {
+      uint8_t low = buffer[(start_pos + 2 + 2 * i) % RX_BUFFER_SIZE];
+      uint8_t high = buffer[(start_pos + 2 + 2 * i + 1) % RX_BUFFER_SIZE];
+      data[i] = (int16_t)((int8_t)high << 8 | low);
+    }
+
+    // 转换为浮点角度并打印
+    float roll = (float)data[0] / 32768.0f * 180;  // 横滚
+    float pitch = (float)data[1] / 32768.0f * 180; // 俯仰
+    float yaw = (float)data[2] / 32768.0f * 180;   // 航向
+
+    printf("Roll: %.2f, Pitch: %.2f, Yaw: %.2f\r\n", roll, pitch, yaw);
+    gyro_data_ready = 1; // 设置数据处理完成标志
+  }
+}
+
+// 在DMA缓冲区中查找陀螺仪数据包
+void Process_DMA_Buffer(void)
+{
+  uint16_t current_pos = RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_uart5_rx);
+
+  // 检查是否有新数据
+  while (rx_read_pos != current_pos)
+  {
+    // 查找包头0x55
+    if (rx_buffer[rx_read_pos] == 0x55)
+    {
+      // 检查是否有完整的11字节数据包
+      uint16_t remaining = (current_pos >= rx_read_pos) ? (current_pos - rx_read_pos) : (RX_BUFFER_SIZE - rx_read_pos + current_pos);
+
+      if (remaining >= 11)
+      {
+        Parse_Gyro_Data(rx_buffer, rx_read_pos);
+        rx_read_pos = (rx_read_pos + 11) % RX_BUFFER_SIZE;
+      }
+      else
+      {
+        break; // 数据不完整，等待更多数据
+      }
+    }
+    else
+    {
+      rx_read_pos = (rx_read_pos + 1) % RX_BUFFER_SIZE;
+    }
+  }
+}
+
+// UART DMA接收完成回调函数
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == UART5)
+  {
+    Process_DMA_Buffer();
+  }
+}
+
+// UART DMA接收半完成回调函数
+void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == UART5)
+  {
+    Process_DMA_Buffer();
+  }
+}
 
 /* USER CODE END 4 */
 
