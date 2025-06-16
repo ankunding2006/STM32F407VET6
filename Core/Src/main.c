@@ -127,13 +127,13 @@ int main(void)
     uint8_t rx_buffer[RX_BUFFER_SIZE];
     uint8_t header;
     uint8_t checksum;
-    int16_t data[4]; // 用于存储解析后的16位数据
+    int16_t data[3]; // 用于存储解析后的16位数据
 
-    while (HAL_UART_Receive(&huart5, &header, 1,1) != HAL_OK || header != 0x55)
+    while (HAL_UART_Receive(&huart5, &header, 1, 1) != HAL_OK || header != 0x55)
       ;
 
     // 2. 接收剩余数据
-    if (HAL_UART_Receive(&huart5, rx_buffer, 10,10) != HAL_OK)
+    if (HAL_UART_Receive(&huart5, rx_buffer, 10, 10) != HAL_OK)
       continue;
     // 3. 校验和验证
     checksum = header + rx_buffer[0]; // 初始值=包头+类型
