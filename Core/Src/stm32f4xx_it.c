@@ -252,6 +252,16 @@ void UART5_IRQHandler(void)
 {
   /* USER CODE BEGIN UART5_IRQn 0 */
 
+  // 检查是否是IDLE中断
+  if (__HAL_UART_GET_FLAG(&huart5, UART_FLAG_IDLE) != RESET)
+  {
+    __HAL_UART_CLEAR_IDLEFLAG(&huart5); // 清除IDLE标志
+
+    // 处理DMA缓冲区数据
+    extern void Process_DMA_Buffer(void);
+    Process_DMA_Buffer();
+  }
+
   /* USER CODE END UART5_IRQn 0 */
   HAL_UART_IRQHandler(&huart5);
   /* USER CODE BEGIN UART5_IRQn 1 */
