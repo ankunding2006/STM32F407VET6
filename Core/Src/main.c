@@ -249,7 +249,7 @@ void Parse_Gyro_Data(uint8_t *buffer, uint16_t start_pos)
 
   if (checksum != buffer[(start_pos + 10) % RX_BUFFER_SIZE])
   {
-    //!printf("Checksum failed\r\n");
+    //! printf("Checksum failed\r\n");
     return; // 校验失败
   }
 
@@ -270,6 +270,24 @@ void Parse_Gyro_Data(uint8_t *buffer, uint16_t start_pos)
     float yaw = (float)data[2] / 32768.0f * 180;   // 航向
 
     printf("Roll: %.2f, Pitch: %.2f, Yaw: %.2f\r\n", roll, pitch, yaw);
+    gyro_data_ready = 1; // 设置数据处理完成标志
+  }
+  else if (buffer[(start_pos + 1) % RX_BUFFER_SIZE] == 0x52) // 检查是否为角速度数据
+  {
+    // 数据解析
+    for (int i = 0; i < 3; i++)
+    {
+      uint8_t low = buffer[(start_pos + 2 + 2 * i) % RX_BUFFER_SIZE];
+      uint8_t high = buffer[(start_pos + 2 + 2 * i + 1) % RX_BUFFER_SIZE];
+      data[i] = (int16_t)((int8_t)high << 8 | low);
+    }
+
+    // 转换为浮点角速度并打印
+    float wx = (float)data[0] / 32768.0f * 2000; // 角速度X
+    float wy = (float)data[1] / 32768.0f * 2000; // 角速度Y
+    float wz = (float)data[2] / 32768.0f * 2000; // 角速度Z
+
+    printf("Wx: %.2f, Wy: %.2f, Wz: %.2f\r\n", wx, wy, wz);
     gyro_data_ready = 1; // 设置数据处理完成标志
   }
 }
